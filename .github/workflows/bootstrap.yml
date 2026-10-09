@@ -8,7 +8,6 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ hashFiles('.bootstrap/part00') != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,6 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f .bootstrap/part00
           mkdir -p /tmp/attestforge
           cat .bootstrap/part* | tr -d '\n\r' > /tmp/attestforge.b64
           base64 --decode /tmp/attestforge.b64 > /tmp/attestforge.tar.gz
