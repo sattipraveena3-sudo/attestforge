@@ -1,0 +1,3 @@
+# Illustrative pinned Python dependency inventory, not an exhaustive environment scan.
+cryptography==46.0.4
+fastapi==0.128.2

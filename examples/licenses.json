@@ -1,0 +1,4 @@
+{
+  "cryptography": "Apache-2.0",
+  "fastapi": "MIT"
+}

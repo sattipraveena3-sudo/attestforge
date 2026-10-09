@@ -1,0 +1,22 @@
+services:
+  verifier:
+    build: .
+    image: attestforge:local
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./examples/trust:/etc/attestforge/trust:ro
+      - ./examples/policy.json:/etc/attestforge/policy.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

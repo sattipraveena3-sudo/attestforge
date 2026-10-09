@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+__pycache__
+tests
+docs
+evidence
+examples
+*.pem
+*.key
+*.dsse.json
+*.sbom.json

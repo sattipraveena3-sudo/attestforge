@@ -69,17 +69,66 @@ make test
 make smoke
 ```
 
-### Generate, attest, and verify
+The clone command becomes usable **after this project has been published**. For the delivered ZIP, extract it, enter the `attestforge` folder and start at `python -m venv .venv`.
+
+### 1. Generate a signing key and a trusted public key
 
 ```bash
 mkdir -p .local/trust
 attestforge keygen --private .local/release-private.pem --public .local/trust/release-public.pem
-attestforge sbom --requirements examples/requirements.lock --licenses examples/licenses.json --app-name example-release --out .local/release.sbom.json
-attestforge attest --artifact examples/demo_release --private .local/release-private.pem --builder local-demo --sbom .local/release.sbom.json --out .local/release.dsse.json
-attestforge verify --artifact examples/demo_release --envelope .local/release.dsse.json --trust-dir .local/trust --policy examples/policy.json --sbom .local/release.sbom.json
 ```
 
-Success exits `0`. Tampering, untrusted signatures, missing SBOMs or policy violations exit `2` with machine-readable failure codes.
+Private PEM is created with `0600` permissions. Never commit it. The local `.local/` directory is excluded by `.gitignore`.
+
+### 2. Generate a minimal CycloneDX SBOM
+
+```bash
+attestforge sbom \
+  --requirements examples/requirements.lock \
+  --licenses examples/licenses.json \
+  --app-name example-release \
+  --out .local/release.sbom.json
+```
+
+This is an **inventory of the supplied pinned requirements**, not an exhaustive dependency graph, license audit or vulnerability scan. Licenses in `examples/licenses.json` are illustrative metadata that must be independently checked for real releases.
+
+### 3. Sign the exact release file inventory
+
+```bash
+attestforge attest \
+  --artifact examples/demo_release \
+  --private .local/release-private.pem \
+  --builder local-demo \
+  --sbom .local/release.sbom.json \
+  --out .local/release.dsse.json
+```
+
+### 4. Verify actual artifact bytes before release
+
+```bash
+attestforge verify \
+  --artifact examples/demo_release \
+  --envelope .local/release.dsse.json \
+  --trust-dir .local/trust \
+  --policy examples/policy.json \
+  --sbom .local/release.sbom.json
+```
+
+Success exits `0` and returns JSON including `"passed": true`, `"release_verified": true`, and `"artifact_integrity_checked": true`. Tampering, untrusted signatures, missing SBOMs or policy violations exit `2` with machine-readable failure codes.
+
+### 5. Demonstrate a blocked release
+
+```bash
+cp -R examples/demo_release .local/tampered
+printf '\n# unexpected edit\n' >> .local/tampered/hello.py
+attestforge verify \
+  --artifact .local/tampered \
+  --envelope .local/release.dsse.json \
+  --trust-dir .local/trust \
+  --policy examples/policy.json \
+  --sbom .local/release.sbom.json
+# Exit 2; failures includes ARTIFACT_MISMATCH
+```
 
 ## Read-only HTTP verification API
 
@@ -89,16 +138,34 @@ export ATTESTFORGE_POLICY_PATH="$PWD/examples/policy.json"
 uvicorn attestforge.api:app --host 127.0.0.1 --port 8000
 ```
 
-Endpoints: `GET /healthz`, `GET /readyz`, and `POST /v1/verify-envelope`. The API checks envelope, SBOM and policy only; run the CLI against actual bytes for a release gate.
+Endpoints: `GET /healthz` (liveness), `GET /readyz` (fails closed when trust/policy missing), `POST /v1/verify-envelope` (bounded request, no client-supplied trust roots, no file-system path input). Example:
+
+```bash
+python - <<'PY'
+import json,urllib.request
+from pathlib import Path
+payload = {
+  'envelope': json.loads(Path('.local/release.dsse.json').read_text()),
+  'sbom': json.loads(Path('.local/release.sbom.json').read_text()),
+}
+request = urllib.request.Request('http://127.0.0.1:8000/v1/verify-envelope',
+  data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
+print(urllib.request.urlopen(request).read().decode())
+PY
+```
+
+A successful API response has `passed: true` but **`release_verified: false`** and **`artifact_integrity_checked: false`**. It is suitable for envelope pre-screening; run the CLI against actual bytes for a release gate. Do not expose this endpoint publicly without a reverse proxy, TLS, authentication, rate limiting and operational controls.
 
 ## Docker
 
 ```bash
+# Copy the trusted public PEM (not private key) to examples/trust/
 cp .local/trust/release-public.pem examples/trust/
 docker compose up --build
+# GET http://127.0.0.1:8000/readyz
 ```
 
-The service runs as non-root UID 10001, with a read-only filesystem, dropped capabilities, no-new-privileges, localhost port binding and read-only trust/policy mounts.
+The service runs as non-root UID 10001, with a read-only filesystem, dropped capabilities, no-new-privileges, localhost port binding and read-only trust/policy mounts. The Docker smoke script also exercises signed-envelope positive and negative cases. Docker execution is configured but **not locally verified in this delivery environment**.
 
 ## Quality checks
 
@@ -107,21 +174,46 @@ python -m compileall -q src
 pytest -q --cov=attestforge --cov-branch --cov-report=term-missing
 ruff check src tests
 bash scripts/smoke.sh
-bash scripts/docker_smoke.sh
+bash scripts/docker_smoke.sh  # requires Docker + image attestforge:ci
 ```
 
-CI runs Python 3.11/3.12/3.13 tests, static lint, coverage threshold >=90%, CLI smoke and Docker smoke. A separate tag-triggered release workflow reruns checks, builds a wheel/sdist and publishes GitHub Release assets.
+CI runs Python 3.11/3.12/3.13 tests, static lint, coverage threshold >=90%, CLI smoke and Docker smoke. A separate tag-triggered **release workflow** reruns checks, builds a wheel/sdist and publishes GitHub Release assets (no PyPI publication). Action dependencies are pinned to commit hashes; CI requests only read access and release write permission is scoped to the release job. Hosted workflow execution must be confirmed after publication.
+
+## Source tree
+
+```text
+src/attestforge/
+  api.py          Read-only verification API with server-owned trust roots
+  cli.py          Keygen, SBOM, attest, verify commands
+  crypto.py       Ed25519 DSSE signing, PAE, trust-store verification
+  engine.py       in-toto Statement, SBOM binding, full verification report
+  manifest.py     Bounded filesystem hashing and manifest validation
+  policy.py       Fail-closed declarative release policy
+  sbom.py         Pinned requirements -> minimal CycloneDX 1.6 inventory
+  util.py         Canonical JSON, strict parsing, safe I/O
+  errors.py       Stable failure codes
+tests/             100 unit, integration, adversarial and API tests
+scripts/           Positive/negative CLI and Docker smoke checks
+docs/              Architecture, threat model, validation, repository metadata
+evidence/          Global Talent evidence notes and visibility plan
+.github/workflows/ci.yml
+Dockerfile, compose.yaml, pyproject.toml, Makefile, LICENSE
+```
 
 ## Standards alignment and explicit limits
 
-- Uses DSSE PAE and an in-toto Statement v1 with a project-specific predicate. This is **not** a SLSA provenance claim or certification.
-- Produces a minimal CycloneDX JSON 1.6 dependency inventory from pinned requirements.
-- Ed25519 verifies a signed file manifest, but trust policy and key distribution must be managed independently.
-- Local directory hashing is not an atomic filesystem snapshot. Avoid concurrent modifications and sign immutable build outputs.
+- Uses DSSE's **PAE signing discipline** and an **in-toto Statement v1** with a project-specific predicate. This is **not** a SLSA provenance claim or certification.
+- Produces a minimal **CycloneDX JSON 1.6** dependency inventory from pinned requirements. The implementation performs subset validation, not exhaustive official-schema conformance validation.
+- Ed25519 verifies a signed file manifest, but the verifier's trust policy and key distribution must be managed independently. Builder names and timestamps are signed **claims**, not third-party identities or trusted timestamps.
+- Local directory hashing is not an atomic filesystem snapshot. Avoid concurrent modifications and sign immutable build outputs. No network vulnerability feed, package discovery, Sigstore transparency log, key revocation or cloud KMS is included.
 
-Built as **Global Talent Portfolio Project #02** by **Praveena Satti**. Distinct from [VeriRAG](https://github.com/sattipraveena3-sudo/veritrag).
+Standards: [in-toto envelope](https://github.com/in-toto/attestation/blob/main/spec/v1/envelope.md) · [CycloneDX JSON](https://cyclonedx.org/docs/1.6/json/)
 
-See [Validation Report](docs/VALIDATION_REPORT.md), [Repository Metadata](docs/REPO_METADATA.md), [Visibility Plan](evidence/VISIBILITY_PLAN.md), [Visa Evidence Notes](evidence/GLOBAL_TALENT_EVIDENCE.md), and [LinkedIn Launch Post](evidence/LINKEDIN_POST.md).
+## Portfolio, attribution and next steps
+
+Built as **Global Talent Portfolio Project #02** by **Praveena Satti**. Distinct from [VeriRAG](https://github.com/sattipraveena3-sudo/veritrag), which addresses claim verification in RAG systems. This repository demonstrates a different domain: cryptographic release assurance, artifact integrity, secure API boundaries, and policy-driven DevSecOps.
+
+See [Validation Report](docs/VALIDATION_REPORT.md), [Repository Metadata + Git Commands](docs/REPO_METADATA.md), [Visibility Plan](evidence/VISIBILITY_PLAN.md), [Visa Evidence Notes](evidence/GLOBAL_TALENT_EVIDENCE.md), and [LinkedIn Launch Post](evidence/LINKEDIN_POST.md). An independent adoption record and third-party review are **not yet established**.
 
 ## Licence
 

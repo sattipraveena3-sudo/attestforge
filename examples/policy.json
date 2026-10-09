@@ -1,0 +1,12 @@
+{
+  "allowed_builders": ["local-demo"],
+  "max_age_hours": 720,
+  "max_future_skew_seconds": 300,
+  "max_files": 10000,
+  "max_total_bytes": 1073741824,
+  "require_sbom": true,
+  "require_component_licenses": true,
+  "denied_licenses": ["GPL-3.0-only"],
+  "required_paths": ["README.md", "hello.py"],
+  "forbidden_extensions": [".pem", ".key", ".env"]
+}
